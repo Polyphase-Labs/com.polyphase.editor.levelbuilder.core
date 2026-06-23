@@ -349,17 +349,31 @@ namespace
                                LevelBuilderRegistry& reg,
                                LevelBuilderContext& ctx);
 
+    // Deferred-open + rebuild latches — see OnLevelBuilderActivate's note.
+    static bool sPendingOpen    = false;
+    static bool sPendingClose   = false;
+    static bool sPendingRebuild = false;
+
     static void OnLevelBuilderActivate(void* /*ud*/)
     {
-        // Open the dockable Level Builder window so artists see the panel
-        // immediately on mode entry. The window keeps any user-set dock
-        // position across activate/deactivate cycles (engine remembers).
-        if (sHooksForMenu) sHooksForMenu->OpenWindow(kWindowId);
+        // CANNOT call OpenWindow synchronously here — Activate fires
+        // from inside the dock-tabbar InvisibleButton click handler.
+        // Opening a dockable window from that nested ImGui context
+        // cascades into Engine code that crashes inside
+        // EditorState::RemoveFromInspectHistory (bad vector::erase).
+        // Defer to the next OnTick which runs OUTSIDE any ImGui frame.
+        sPendingOpen    = true;
+        sPendingClose   = false;
+        // v13: also queue a placed-piece rescan so Paint Erase / Replace
+        // see pre-existing scene placements without the user having to
+        // hit "Rebuild From World" manually after each project open.
+        sPendingRebuild = true;
     }
 
     static void OnLevelBuilderDeactivate(void* /*ud*/)
     {
-        if (sHooksForMenu) sHooksForMenu->CloseWindow(kWindowId);
+        sPendingClose = true;
+        sPendingOpen  = false;
     }
 
     static void OnLevelBuilderTick(float /*dt*/, void* /*ud*/)
@@ -369,6 +383,29 @@ namespace
         if (!api) return;
         EditorUIHooks* hooks = api->editorUI;
         LevelBuilderContext& ctx = reg.GetContextRef();
+
+        // Service deferred window open/close latches (see Activate note).
+        // Tick fires once per frame outside any ImGui nested context, so
+        // OpenWindow / CloseWindow are safe here.
+        if (sPendingOpen)
+        {
+            sPendingOpen = false;
+            if (sHooksForMenu) sHooksForMenu->OpenWindow(kWindowId);
+        }
+        if (sPendingClose)
+        {
+            sPendingClose = false;
+            if (sHooksForMenu) sHooksForMenu->CloseWindow(kWindowId);
+        }
+        // v13: fan out a placed-piece rescan to every registered sibling.
+        // Same deferred pattern — rebuild walks the world tree and
+        // touches engine state; safer outside any ImGui nested context.
+        if (sPendingRebuild)
+        {
+            sPendingRebuild = false;
+            reg.RebuildAllFromWorld();
+        }
+
         DoViewportTick(api, hooks, reg, ctx);
     }
 
@@ -468,9 +505,20 @@ namespace
         const bool previewArmed = !reg.GetPreviewAsset().empty();
 
         // Suppress the editor's click-selects-the-hit-node behavior on
-        // the NEXT click so our placement click doesn't double-act.
+        // the NEXT click so our placement / replace click doesn't also
+        // leave the hit node selected. Fires when EITHER a preview is
+        // armed (placement flows) OR the active brush opts out of the
+        // preview requirement (Replace, future MoveSelected).
+        bool wantSuppress = previewArmed;
+        if (!wantSuppress)
+        {
+            LevelBuilderBrush* activeBrush =
+                reg.FindBrush(reg.GetActiveBrushName().c_str());
+            if (activeBrush && !activeBrush->NeedsArmedPreview())
+                wantSuppress = true;
+        }
         if (hooks && hooks->Viewport_SuppressNextSelectionClick
-            && hovered && previewArmed)
+            && hovered && wantSuppress)
         {
             hooks->Viewport_SuppressNextSelectionClick();
         }
@@ -496,7 +544,20 @@ namespace
         // (Manual-positioned preview left intact when cursor wanders off.)
 
         // ---- 4. Dispatch click to active tool's subscriber ----
-        if (leftClicked && previewArmed && ctx.mLastRaycastValid)
+        // Most brushes only make sense with an armed palette item, so
+        // we gate on previewArmed by default — prevents random clicks
+        // in a fresh project from spawning anything. Brushes that
+        // operate on already-placed pieces (Replace, eventually
+        // MoveSelected) opt out via NeedsArmedPreview()==false and
+        // their clicks fire regardless.
+        bool dispatchOk = previewArmed;
+        if (!dispatchOk)
+        {
+            LevelBuilderBrush* activeBrush = reg.FindBrush(reg.GetActiveBrushName().c_str());
+            if (activeBrush && !activeBrush->NeedsArmedPreview())
+                dispatchOk = true;
+        }
+        if (leftClicked && dispatchOk && ctx.mLastRaycastValid)
         {
             const std::string& active = reg.GetActiveToolName();
             if (!active.empty())
@@ -546,10 +607,13 @@ namespace LevelBuilderEditorUI
             hooks->RegisterViewportOverlay(hookId, "level_builder_preview",
                                            &DrawViewportPreview, nullptr);
 
-        // Viewport-mode dropdown entry (engine v7+ hook). Replaces the
-        // older "Addons > Level Builder > Open Level Builder" menu item —
-        // the user enters Level Builder mode from the viewport's mode
-        // dropdown; OnActivate opens the panel + arms the tick path.
+        // Viewport-mode dropdown entry (engine v7+ hook). Picking
+        // "Level Builder" enables the OnTick callback (mouse polling +
+        // brush stamping only runs while this mode is active). The panel
+        // is still a separate dockable window — open it via the Addons
+        // menu entry below or via the dock layout. (We previously had
+        // OnActivate auto-open the panel but that cascade crashed
+        // inside the engine's dock tabbar; decoupled until that's fixed.)
         if (hooks->AddViewportMode)
         {
             hooks->AddViewportMode(
@@ -564,13 +628,12 @@ namespace LevelBuilderEditorUI
                 &OnLevelBuilderDrawPanel,
                 nullptr);
         }
-        else if (hooks->AddAddonsMenuItem)
-        {
-            // Pre-AddViewportMode engine: fall back to the Addons menu
-            // entry so the user can still open the panel manually.
+
+        // Addons-menu entry — kept registered as the primary way to open
+        // the panel (since OnActivate no longer auto-opens it).
+        if (hooks->AddAddonsMenuItem)
             hooks->AddAddonsMenuItem(hookId, "Level Builder/Open Level Builder",
                                      &OnOpenLevelBuilderMenu, nullptr);
-        }
     }
 
     void Unregister(EditorUIHooks* hooks, uint64_t hookId)

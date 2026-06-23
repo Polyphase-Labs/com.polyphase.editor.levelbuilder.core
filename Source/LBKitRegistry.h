@@ -35,6 +35,13 @@ public:
     LBKit* FindKitByIndex(int idx);
     void   RemoveKit(const std::string& name);
 
+    // R4: rename a kit in-place. Updates the by-name map, the order
+    // vector, and the active-kit pointer if it matched the old name.
+    // Returns false if `oldName` doesn't exist or `newName` collides
+    // with an existing kit. Leaves sourceFile alone — the caller decides
+    // whether to also rename the on-disk JSON file.
+    bool RenameKit(const std::string& oldName, const std::string& newName);
+
     int    GetKitCount() const { return (int)mOrder.size(); }
     int    FindKitIndex(const std::string& name) const;
     const  std::string& GetKitNameAt(int idx) const;

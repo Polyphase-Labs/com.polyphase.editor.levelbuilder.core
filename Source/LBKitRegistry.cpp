@@ -182,6 +182,25 @@ void LBKitRegistry::RemoveKit(const std::string& name)
     if (mActive == name) mActive.clear();
 }
 
+bool LBKitRegistry::RenameKit(const std::string& oldName, const std::string& newName)
+{
+    if (oldName.empty() || newName.empty() || oldName == newName) return false;
+    auto it = mKits.find(oldName);
+    if (it == mKits.end()) return false;
+    if (mKits.find(newName) != mKits.end()) return false;
+
+    std::unique_ptr<LBKit> moved = std::move(it->second);
+    moved->name = newName;
+    mKits.erase(it);
+    mKits[newName] = std::move(moved);
+
+    for (auto& n : mOrder)
+        if (n == oldName) { n = newName; break; }
+
+    if (mActive == oldName) mActive = newName;
+    return true;
+}
+
 int LBKitRegistry::FindKitIndex(const std::string& name) const
 {
     for (int i = 0; i < (int)mOrder.size(); ++i)
@@ -278,7 +297,27 @@ LBKit* LBKitRegistry::LoadKitFromFile(const std::string& path, std::string* outE
 {
     LBKit parsed;
     std::string err;
-    if (!LBKitJson::LoadFromFile(path, parsed, err))
+
+    // Folder-mode dispatch (Phase 3 of KitAuthoringUI): when the kit.json
+    // at `path` carries an indexed `pieces` array (entries with "file"
+    // and no inline "asset"), load the kit via LBKitJson::LoadFromFolder
+    // so each pieces/<name>.json gets read. Single-file kits — including
+    // legacy `<project>/Kits/*.json` and the inline-pieces kit.json that
+    // Phase 5.5a's Kenney synthesizer still writes — keep going through
+    // LoadFromFile.
+    namespace fs = std::filesystem;
+    fs::path p(path);
+    bool isKitJson = (p.filename() == "kit.json");
+    bool loaded = false;
+    if (isKitJson && LBKitJson::IsFolderModeKitJson(path))
+    {
+        loaded = LBKitJson::LoadFromFolder(p.parent_path().string(), parsed, err);
+    }
+    if (!loaded)
+    {
+        loaded = LBKitJson::LoadFromFile(path, parsed, err);
+    }
+    if (!loaded)
     {
         if (outError) *outError = err;
         return nullptr;
@@ -295,8 +334,21 @@ LBKit* LBKitRegistry::LoadKitFromFile(const std::string& path, std::string* outE
         if (outError) *outError = path + ": failed to register kit";
         return nullptr;
     }
-    kit->pieces = std::move(parsed.pieces);
-    kit->sourceFile = path;
+    kit->pieces        = std::move(parsed.pieces);
+    kit->sourceFile    = path;
+    kit->kitId                   = std::move(parsed.kitId);
+    kit->kitVersion              = std::move(parsed.kitVersion);
+    kit->author                  = std::move(parsed.author);
+    kit->authorUrl               = std::move(parsed.authorUrl);
+    kit->license                 = std::move(parsed.license);
+    kit->licenseUrl              = std::move(parsed.licenseUrl);
+    kit->description             = std::move(parsed.description);
+    kit->previewImage            = std::move(parsed.previewImage);
+    kit->homepage                = std::move(parsed.homepage);
+    kit->minimumPolyphaseVersion = std::move(parsed.minimumPolyphaseVersion);
+    kit->tags                    = std::move(parsed.tags);
+    kit->dependencies            = std::move(parsed.dependencies);
+    kit->kitIdSynthesized        = parsed.kitIdSynthesized;
     return kit;
 }
 

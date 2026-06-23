@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <vector>
 
 LevelBuilderRegistry& LevelBuilderRegistry::Get()
 {
@@ -445,6 +446,37 @@ LevelBuilderRegistry::FindEnumerateFn(const char* toolName) const
     auto it = mEnumerateFns.find(toolName);
     if (it == mEnumerateFns.end()) return nullptr;
     return &it->second;
+}
+
+// ===== Rebuild-from-world hooks (v13) ============================================
+
+void LevelBuilderRegistry::RegisterRebuildFromWorldFn(const char* toolName,
+                                                      LevelBuilderCoreAPI::LBRebuildFromWorldFn fn,
+                                                      void* userData)
+{
+    if (!toolName || !*toolName) return;
+    if (fn == nullptr) { mRebuildFns.erase(toolName); return; }
+    RebuildFnEntry e;
+    e.fn = fn;
+    e.userData = userData;
+    mRebuildFns[toolName] = e;
+}
+
+void LevelBuilderRegistry::UnregisterRebuildFromWorldFn(const char* toolName)
+{
+    if (!toolName) return;
+    mRebuildFns.erase(toolName);
+}
+
+void LevelBuilderRegistry::RebuildAllFromWorld()
+{
+    // Snapshot the entries so a callback that touches the registry
+    // (e.g. unregisters itself) can't invalidate the iterator.
+    std::vector<RebuildFnEntry> snapshot;
+    snapshot.reserve(mRebuildFns.size());
+    for (const auto& kv : mRebuildFns) snapshot.push_back(kv.second);
+    for (const RebuildFnEntry& e : snapshot)
+        if (e.fn) e.fn(e.userData);
 }
 
 // ===== Diagnostics ===============================================================

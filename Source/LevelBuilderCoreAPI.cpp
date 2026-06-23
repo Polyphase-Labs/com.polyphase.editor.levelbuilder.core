@@ -313,7 +313,29 @@ namespace
             return 2;
         }
         std::string err;
-        if (!LBKitJson::SaveToFile(k->sourceFile, *k, err))
+        // Folder-mode dispatch (Phase 3 of KitAuthoringUI): folder-mode
+        // kits ("…/kit.json") write through SaveToFolder. Legacy single-
+        // file kits ("…/Foo.json") auto-upgrade to folder mode on first
+        // save: we re-derive the sourceFile to <parent>/<stem>/kit.json
+        // and write through SaveToFolder. The old loose JSON stays on
+        // disk so the artist can verify the new layout before deleting
+        // it (per KitAuthoringUI.md §4 — "no auto-cleanup; too destructive").
+        bool ok = false;
+        {
+            std::filesystem::path p(k->sourceFile);
+            if (p.filename() == "kit.json")
+            {
+                ok = LBKitJson::SaveToFolder(p.parent_path().string(), *k, err);
+            }
+            else
+            {
+                std::filesystem::path folder = p.parent_path() / p.stem();
+                std::filesystem::path newSource = folder / "kit.json";
+                ok = LBKitJson::SaveToFolder(folder.string(), *k, err);
+                if (ok) k->sourceFile = newSource.string();
+            }
+        }
+        if (!ok)
         {
             writeErr(err);
             return 3;
@@ -419,6 +441,18 @@ namespace
         }
         if (outUd) *outUd = e->userData;
         return e->fn;
+    }
+
+    // ===== v13 — rebuild-from-world hooks =====
+    void C_RegisterRebuildFromWorldFn(const char* toolName,
+                                      LevelBuilderCoreAPI::LBRebuildFromWorldFn fn,
+                                      void* userData)
+    {
+        LevelBuilderRegistry::Get().RegisterRebuildFromWorldFn(toolName, fn, userData);
+    }
+    void C_UnregisterRebuildFromWorldFn(const char* toolName)
+    {
+        LevelBuilderRegistry::Get().UnregisterRebuildFromWorldFn(toolName);
     }
 
     // v8 / C_History_* wrappers removed in v9. Undo now lives in the
@@ -669,6 +703,124 @@ namespace
         return 0;
     }
 
+    // ===== v10 — R4 piece-level mutation surface =========================
+
+    // Sanitize a kit name into a filesystem-safe stem for the auto-derived
+    // sourceFile under <project>/Kits/. Mirrors the rules artists hit when
+    // they save a new kit by hand: lowercase letters, digits, dot, dash,
+    // underscore pass through; everything else collapses to '_'. Empty
+    // result falls back to "kit".
+    static std::string SanitizeKitFilename(const std::string& name)
+    {
+        std::string out;
+        out.reserve(name.size());
+        for (unsigned char c : name)
+        {
+            if ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') ||
+                (c >= 'A' && c <= 'Z') || c == '.' || c == '-' || c == '_')
+                out.push_back((char)c);
+            else if (c == ' ')
+                out.push_back('_');
+            // drop everything else
+        }
+        if (out.empty()) out = "kit";
+        return out;
+    }
+
+    int C_Kit_CreateKit(const char* name)
+    {
+        if (!name || !*name) return -1;
+        const std::string n = name;
+        if (LBKitRegistry::Get().FindKit(n)) return -1;   // duplicate
+        LBKit* k = LBKitRegistry::Get().CreateKit(n);
+        if (!k) return -1;
+
+        // Derive a sensible default sourceFile so Kit_Save works out of
+        // the box. The file isn't written until Kit_Save is called.
+        //
+        // Phase 3 of KitAuthoringUI: new kits land as folder-per-kit
+        // (<project>/Kits/<sanitized>/kit.json). C_Kit_Save dispatches
+        // through LBKitJson::SaveToFolder whenever the sourceFile's
+        // filename is "kit.json", so the editor automatically writes
+        // the split layout for any kit created from the UI. Legacy
+        // single-file kits keep their <name>.json sourceFile until the
+        // user explicitly migrates (drop a kit.json next to them or
+        // delete the loose file after the first folder save).
+        const std::string& kitsFolder = LBKitRegistry::GetProjectKitsFolder();
+        if (!kitsFolder.empty())
+        {
+            std::filesystem::path p = std::filesystem::path(kitsFolder)
+                                    / SanitizeKitFilename(n)
+                                    / "kit.json";
+            k->sourceFile = p.string();
+        }
+        return LBKitRegistry::Get().FindKitIndex(n);
+    }
+
+    int C_Kit_DeleteKit(int kitIdx)
+    {
+        LBKit* k = LBKitRegistry::Get().FindKitByIndex(kitIdx);
+        if (!k) return 0;
+        LBKitRegistry::Get().RemoveKit(k->name);
+        return 1;
+    }
+
+    int C_Kit_SetKitName(int kitIdx, const char* newName)
+    {
+        if (!newName || !*newName) return 0;
+        LBKit* k = LBKitRegistry::Get().FindKitByIndex(kitIdx);
+        if (!k) return 0;
+        return LBKitRegistry::Get().RenameKit(k->name, newName) ? 1 : 0;
+    }
+
+    int C_Kit_AddPiece(int kitIdx, const char* name, const char* assetName)
+    {
+        LBKit* k = LBKitRegistry::Get().FindKitByIndex(kitIdx);
+        if (!k) return -1;
+        LBPiece p;
+        p.name      = (name && *name) ? name : "NewPiece";
+        p.assetName = assetName ? assetName : "";
+        k->pieces.push_back(std::move(p));
+        return (int)k->pieces.size() - 1;
+    }
+
+    int C_Kit_RemovePiece(int kitIdx, int pieceIdx)
+    {
+        LBKit* k = LBKitRegistry::Get().FindKitByIndex(kitIdx);
+        if (!k) return 0;
+        if (pieceIdx < 0 || pieceIdx >= (int)k->pieces.size()) return 0;
+        k->pieces.erase(k->pieces.begin() + pieceIdx);
+        return 1;
+    }
+
+    void C_Kit_SetPieceName(int kitIdx, int pieceIdx, const char* name)
+    {
+        LBPiece* p = GetMutablePiece(kitIdx, pieceIdx);
+        if (!p) return;
+        p->name = name ? name : "";
+    }
+
+    void C_Kit_SetPieceAsset(int kitIdx, int pieceIdx, const char* assetName)
+    {
+        LBPiece* p = GetMutablePiece(kitIdx, pieceIdx);
+        if (!p) return;
+        p->assetName = assetName ? assetName : "";
+    }
+
+    void C_Kit_SetPieceCategory(int kitIdx, int pieceIdx, const char* category)
+    {
+        LBPiece* p = GetMutablePiece(kitIdx, pieceIdx);
+        if (!p) return;
+        p->category = category ? category : "";
+    }
+
+    void C_Kit_SetPieceIconPath(int kitIdx, int pieceIdx, const char* iconPath)
+    {
+        LBPiece* p = GetMutablePiece(kitIdx, pieceIdx);
+        if (!p) return;
+        p->iconPath = iconPath ? iconPath : "";
+    }
+
     const char* C_Kit_GetPreviewImageAbsPath(int kitIdx)
     {
         static thread_local std::string sCached;
@@ -796,6 +948,23 @@ namespace
         // gone (not nulled), so plugins compiled against v8 won't
         // resolve the missing entries; that's by design — v9 isn't
         // backward-compatible with v8.
+
+        // v10 additions — R4 piece-level mutation surface
+        &C_Kit_CreateKit,
+        &C_Kit_DeleteKit,
+        &C_Kit_SetKitName,
+
+        &C_Kit_AddPiece,
+        &C_Kit_RemovePiece,
+
+        &C_Kit_SetPieceName,
+        &C_Kit_SetPieceAsset,
+        &C_Kit_SetPieceCategory,
+        &C_Kit_SetPieceIconPath,
+
+        // v13 additions — rebuild-from-world hooks
+        &C_RegisterRebuildFromWorldFn,
+        &C_UnregisterRebuildFromWorldFn,
     };
 }
 

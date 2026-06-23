@@ -26,4 +26,30 @@ namespace LBKitJson
     // Pretty-print the kit back to disk. Round-trips byte-identically for
     // the fields this module knows about; unknown fields are dropped.
     bool SaveToFile(const std::string& path, const LBKit& kit, std::string& outError);
+
+    // ---- Phase 3 of KitAuthoringUI: folder-mode kit layout ----------
+    //
+    // The folder-mode layout splits a kit across many files for
+    // git-friendliness and conflict-free multi-artist edits (see
+    // Documentation/Developers/KitAuthoringUI.md §4):
+    //
+    //   <KitFolder>/
+    //     kit.json               -- kit metadata + pieces index
+    //                                ("pieces": [{ "id": str, "file": str }])
+    //     pieces/<PieceName>.json -- one piece per file
+    //
+    // SaveToFolder writes kit.json + pieces/*.json from `kit`. Stale
+    // per-piece files (pieces no longer in the kit) are removed.
+    // LoadFromFolder reads them back into outKit. Both round-trip
+    // through the same JSON shape as the single-file format, just split
+    // — so a kit can move between layouts without losing data.
+    bool SaveToFolder(const std::string& folderPath, const LBKit& kit, std::string& outError);
+    bool LoadFromFolder(const std::string& folderPath, LBKit& outKit, std::string& outError);
+
+    // True when the JSON document at `path` looks like a folder-mode
+    // kit.json (its "pieces" array entries reference external files
+    // via { "id":..., "file":... } instead of containing the piece
+    // inline). Cheap — opens and parses only the kit.json. Returns
+    // false on any parse error or for legacy single-file kits.
+    bool IsFolderModeKitJson(const std::string& path);
 }

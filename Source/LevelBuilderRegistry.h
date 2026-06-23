@@ -160,6 +160,20 @@ public:
     void UnregisterEnumerateFn(const char* toolName);
     const EnumerateFnEntry* FindEnumerateFn(const char* toolName) const;
 
+    // ---- Rebuild-from-world hooks (v13) ----
+    struct RebuildFnEntry
+    {
+        LevelBuilderCoreAPI::LBRebuildFromWorldFn fn = nullptr;
+        void* userData = nullptr;
+    };
+    void RegisterRebuildFromWorldFn(const char* toolName,
+                                    LevelBuilderCoreAPI::LBRebuildFromWorldFn fn,
+                                    void* userData);
+    void UnregisterRebuildFromWorldFn(const char* toolName);
+    // Fan out — calls every registered rebuild callback. Used by core's
+    // OnLevelBuilderActivate to refresh placed registries on mode entry.
+    void RebuildAllFromWorld();
+
     // ---- Diagnostics ----
     void SetLastError(const char* msg);
     const char* GetLastError() const { return mContext.mLastError; }
@@ -204,6 +218,7 @@ private:
 
     std::unordered_map<std::string, SpawnFnEntry>    mSpawnFns;
     std::unordered_map<std::string, EnumerateFnEntry> mEnumerateFns;
+    std::unordered_map<std::string, RebuildFnEntry>   mRebuildFns;
 
     LevelBuilderPalette* FindPaletteAnywhere(const std::string& name);
 };
