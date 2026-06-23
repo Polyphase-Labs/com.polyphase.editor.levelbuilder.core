@@ -1,0 +1,16 @@
+{
+    "name": "com.polyphase.editor.levelbuilder.core",
+    "author": "Polyphase Labs",
+    "description": "Shared editor framework for level building tools (tools, brushes, snap providers, palettes, preview, dockable Level Builder window).",
+    "displayName": "Polyphase Level Builder Core",
+    "version": "0.1.0",
+    "native": {
+        "target": "engine",
+        "sourceDir": "Source",
+        "binaryName": "com.polyphase.editor.levelbuilder.core",
+        "entrySymbol": "PolyphasePlugin_GetDesc",
+        "apiVersion": 3,
+        "resolveMode": "source",
+        "binaries": []
+    }
+}
