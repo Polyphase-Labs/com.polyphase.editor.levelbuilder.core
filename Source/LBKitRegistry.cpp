@@ -227,10 +227,23 @@ LBKit* LBKitRegistry::GetActiveKit()
 }
 
 // -----------------------------------------------------------------------------
-// Built-in starter kit (moved from modular's EnsureBuiltinKit)
+// Built-in starter kit — RETIRED.
+//
+// EnsureBuiltinKit used to seed a hard-coded "Default Kit" with three
+// pieces (Wall_4m / Floor_4x4 / Door_2m) so the user had something
+// browsable on first launch. Retired at user request — the kit list
+// now reflects only what's on disk under <project>/Kits/ or
+// <project>/Assets/Kits/. EnsureBuiltinKit is kept as an empty no-op
+// so callers don't have to be updated.
 // -----------------------------------------------------------------------------
 
 void LBKitRegistry::EnsureBuiltinKit()
+{
+    // Intentionally empty — see header comment above.
+}
+
+#if 0  // dead code preserved as a reference; safe to delete entirely
+void LBKitRegistry::EnsureBuiltinKit_Legacy()
 {
     if (FindKit("Default Kit")) return;
 
@@ -288,6 +301,7 @@ void LBKitRegistry::EnsureBuiltinKit()
 
     SetActiveKit("Default Kit");
 }
+#endif  // legacy EnsureBuiltinKit
 
 // -----------------------------------------------------------------------------
 // I/O
@@ -640,6 +654,12 @@ int LBKitRegistry::ScanProjectKits()
 
     if (!prevActive.empty() && FindKit(prevActive))
         SetActiveKit(prevActive);
+    else if (mActive.empty() && !mOrder.empty())
+        // No previous selection (or it got renamed away) → land on the
+        // first loaded kit so the picker isn't blank. Replaces the
+        // implicit fallback that used to come from "Default Kit" being
+        // always present.
+        SetActiveKit(mOrder.front());
 
     return GetKitCount();
 }
